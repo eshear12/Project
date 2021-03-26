@@ -1,0 +1,294 @@
+---
+title: "Savant Board"
+output: 
+  flexdashboard::flex_dashboard:
+    pdf_document: default
+    orientation: rows
+    vertical_layout: scroll
+runtime: shiny
+---
+
+<style>                     
+.navbar {
+  background-color:black;
+  border-color:black;
+}
+.navbar-brand {
+color:white!important;
+}
+</style>  
+
+
+Baseball Data {data-icon="fa-baseball-ball"}
+===============================================
+
+
+Input {.sidebar}
+-------------------
+
+```{r}
+library(cowplot)
+library(RcppArmadillo)
+library(dashboardthemes)
+library(sortable)
+library(flexdashboard)
+library(dplyr)
+library(ggplot2)
+library(zoo)
+library(lubridate)
+library(shiny)
+library(shinydashboard)
+library(devtools)
+library(kableExtra)
+library(data.table)
+library(DT)
+library(plotly)
+library(htmlwidgets)
+library(ggdark)
+library(ggthemes)
+library(broom)
+##
+##
+
+dat<-read.csv("dat.csv")
+dat<-dat %>% 
+  filter(launch_angle>-40, launch_speed>-20) %>% 
+  filter(launch_angle<140, launch_speed<140)
+
+
+selectInput("player_type",
+            "Player Name",
+            choices=sort(unique(dat$player_name)),
+            selected=sort(unique(dat$player_name))[1],
+            multiple = FALSE)
+
+selectInput("pitch_type",
+            "Pitch Type",
+            choices=sort(c("Slider", "Changeup", "4-Seam Fastball", "2-Seam Fastball", "Curveball", "Sinker")),
+            selected="4-Seam Fastball",
+            multiple = TRUE)
+
+selectInput("variable",
+            "Variable",
+            choices=sort(c("effective_speed", "launch_speed")),
+            selected="launch_speed",
+            multiple = FALSE)
+
+numericInput("velo_thresh",
+             "Velocity Threshold",
+             80, min=40, max=120)
+
+```
+
+Row
+------------
+
+### Exit Velo vs. Launch Angle
+
+```{r}
+renderPlotly({
+ggplotly(
+  dat %>% 
+  filter(!is.na(launch_speed)==TRUE) %>% 
+  filter(launch_speed>=input$velo_thresh, player_name==input$player_type) %>% 
+  ggplot(aes(launch_angle, launch_speed, col=bb_type)) + 
+  geom_point()+
+  theme_fivethirtyeight())
+  })
+```
+
+### Player Table
+
+```{r}
+brks <- quantile(dat$launch_angle, probs = seq(.05, .95, .05), na.rm = TRUE)
+clrs <- round(seq(455, 40, length.out = length(brks) + 1), 0) %>%{paste0("rgb(455,", ., ",", ., ")")}
+brks1 <- quantile(dat$launch_speed, probs = seq(.05, .95, .05), na.rm = TRUE)
+clrs1 <- round(seq(255, 40, length.out = length(brks1) + 1), 0) %>%{paste0("rgb(255,", ., ",", ., ")")}
+renderDataTable({
+datatable(
+dat %>% 
+  filter(!is.na(launch_speed)==TRUE) %>% 
+  filter(launch_speed>=input$velo_thresh, player_name==input$player_type) %>% 
+  select(player_name, events, launch_speed, launch_angle, pitch_name),
+  extensions = 'Scroller', options = list(deferRender = F, dom = 't', columnDefs = list(list(className = 'dt-center', targets = "_all")),scrollY = 300, scroller = TRUE, scrollX = T,pageLength = 5,autoWidth = TRUE,
+  columnDefs = list(list(width = '300px', targets = "_all")))) %>% 
+    formatStyle("launch_angle", backgroundColor = styleInterval(brks, clrs)) %>% 
+    formatStyle("launch_speed", backgroundColor = styleInterval(brks1, clrs1))
+})
+```
+
+Row
+------------
+
+###  Release Speed vs. Effective Speed
+
+```{r}
+renderPlotly({
+  ggplotly(
+  dat %>% 
+  filter(pitch_name %in% input$pitch_type,
+         effective_speed>30) %>% 
+    slice(1:2000) %>% 
+  ggplot(aes(effective_speed, release_speed, col=pitch_name)) +
+  geom_point()+
+  stat_smooth()+
+  facet_wrap(~pitch_name))
+  })
+```
+
+### Predictor
+
+```{r}
+p1<-renderDataTable({
+datatable( 
+  tidy(
+dat %>% 
+  filter(pitch_name %in% input$pitch_type,
+         effective_speed>30) %>% 
+  select(release_speed, input$variable) %>% 
+  lm(release_speed~., data=.)) %>% 
+  mutate(est=round(estimate, 2),
+         p=round(p.value, 2)) %>% 
+  select(term, est, p)
+,
+  extensions = 'Scroller', options = list(deferRender = F, dom = 't', columnDefs = list(list(className = 'dt-center', targets = "_all")),scrollY = 300, scroller = TRUE, scrollX = T,pageLength = 5,autoWidth = TRUE,
+  columnDefs = list(list(width = '300px', targets = "_all")))) 
+  })
+
+
+p2<-renderDataTable({
+datatable( 
+    glance(
+dat %>% 
+  filter(pitch_name %in% input$pitch_type,
+         effective_speed>30) %>% 
+  select(release_speed, input$variable) %>% 
+  lm(release_speed~., data=.)) %>% 
+  mutate(rsq=round(r.squared, 2),
+         AIC=round(AIC, 2),
+         BIC=round(BIC, 2)
+  ) %>% 
+  select(rsq, AIC, BIC),
+  extensions = 'Scroller', options = list(deferRender = F, dom = 't', columnDefs = list(list(className = 'dt-center', targets = "_all")),scrollY = 300, scroller = TRUE, scrollX = T,pageLength = 5,autoWidth = TRUE,
+  columnDefs = list(list(width = '300px', targets = "_all")))) 
+  })
+
+
+tabBox(width = 12, 
+       title = "Model Information",
+       tabPanel("Parameters",p1),
+       tabPanel("Diagnostics",p2)
+)
+```
+
+### Launch Velocity Gauge
+
+```{r}
+gdata<-reactive(
+  data.frame(do.call(cbind, lapply(dat %>% 
+  filter(pitch_name==input$pitch_type) %>%
+    select(launch_speed), summary))) %>% 
+  pull()
+)
+
+pgauge<-reactive(data.frame(do.call(cbind, lapply(dat %>% 
+  filter(pitch_name==input$pitch_type, player_name==input$player_type) %>%
+    select(launch_speed), summary))) %>% 
+  pull())
+
+renderGauge({
+flexdashboard::gauge(round(pgauge()[4],2), min=gdata()[1], max=gdata()[6],
+gaugeSectors(success = c(gdata()[5],gdata()[6]), warning = c(gdata()[4],gdata()[5]), danger = c(gdata()[1], gdata()[4]))
+)})
+
+```
+
+
+Row
+--------------
+
+### 
+
+```{r}
+flexdashboard::renderValueBox({
+flexdashboard::valueBox(dat %>% 
+                          filter(player_name==input$player_type) %>% 
+                          select(player_name) %>% 
+                          pull() %>% 
+                          min(), icon="fa-amazon", color = "green")
+})
+
+```
+
+###
+
+```{r}
+
+```
+
+
+New Page
+================
+
+Input {.sidebar}
+-------------------
+
+```{r}
+
+selectInput("player_type2",
+            "Player Name",
+            choices=sort(unique(dat$player_name)),
+            selected=sort(unique(dat$player_name))[1],
+            multiple = FALSE)
+
+selectInput("player_type3",
+            "Player Name",
+            choices=sort(unique(dat$player_name)),
+            selected=sort(unique(dat$player_name))[1],
+            multiple = FALSE)
+
+# # selectInput("pitch_type",
+#             "Pitch Type",
+#             choices=sort(c("Slider", "Changeup", "4-Seam Fastball", "2-Seam Fastball", "Curveball", "Sinker")),
+#             selected="4-Seam Fastball",
+#             multiple = TRUE)
+
+# selectInput("variable",
+#             "Variable",
+#             choices=sort(c("effective_speed", "launch_speed")),
+#             selected="launch_speed",
+#             multiple = FALSE)
+# 
+# numericInput("velo_thresh",
+#              "Velocity Threshold",
+#              80, min=40, max=120)
+
+```
+
+Row
+----------------------
+
+### Launch Speed Over Time
+
+```{r}
+library(apexcharter)
+renderApexchart({
+apex(data = dat %>% 
+       filter(player_name %in% c(input$player_type2, input$player_type3, !is.na(launch_speed))),
+     type = "column",
+     aes(x=ymd(game_date), y=launch_speed, group=player_name)
+              )
+     })
+```
+
+### 
+
+```{r}
+
+```
+
+
+
+
+
+
